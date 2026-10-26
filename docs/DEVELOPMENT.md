@@ -1,48 +1,64 @@
-# Development notes
-
-## Device and report profile
-
-The supported Bluetooth device reports VID 9354 / PID 33382 and the exact descriptor pinned in `Source/SideDecoder.swift`.
-
-Input report 3 has eight bytes, including its leading `03` report-ID byte. Byte 1 contains the ordinary button bits and side masks `08` / `10`; subsequent bytes contain motion/wheel data, which this decoder ignores. Changes are decoded into edges, not repeated actions for every held report.
-
-The captured descriptor allocates five button bits but declares Button usages 1 through 3. That mismatch plausibly explains the lack of standard side-button events; it is not a verified diagnosis of macOS internals.
-
-A live regression log showed the exact descriptor match while `IOHIDDeviceConformsTo(mouse)` returned false before open. Accordingly, that function is diagnostic only. `DeviceProfile.swift` matches IDs, Bluetooth transport and descriptor; matching also requires exactly one candidate. Do not reintroduce the redundant collection gate.
-
-Metadata discovery is broad, but the manager is not opened and only the exact selected Lofree receives an input callback. Device access uses `kIOHIDOptionsTypeNone`. Teardown unschedules/unregisters callbacks and closes the device before freeing its callback buffer.
+# Development
 
 ## Source layout
 
-- `DeviceProfile.swift`: verified device matcher.
-- `SideDecoder.swift`: input report-to-edge decoder.
-- `GestureEngine.swift`: click/double-click/hold timing and cancellation.
-- `Settings.swift`: persisted settings, calibration and action definitions.
-- `EventFactory.swift`: independent public-Quartz extra-button event construction.
-- `main.swift`: AppKit UI, HID lifecycle, reconnection, permissions, login service and action dispatch.
-- `Tests/main.swift`: deterministic tests; event-construction tests never post events.
-- `build_icon.py`: ICNS packaging of already-sized PNGs, without third-party dependencies.
+| File | Purpose |
+| --- | --- |
+| `Source/DeviceProfile.swift` | Matches the verified Bluetooth device profile. |
+| `Source/SideDecoder.swift` | Decodes raw reports into side-button edges. |
+| `Source/GestureEngine.swift` | Handles click, double-click, hold and cancellation. |
+| `Source/Settings.swift` | Stores action choices and button order. |
+| `Source/EventFactory.swift` | Constructs synthetic extra-button events. |
+| `Source/main.swift` | UI, device lifecycle, reconnection, login and action dispatch. |
+| `Tests/main.swift` | Decoder, profile, settings, gesture and event-construction tests. |
+| `build_icon.py` | Packages pre-sized PNGs as an ICNS file. |
 
-The internal `--preview` argument shows a Settings UI with input handling, permission requests, login registration and preference writes disabled. It is for layout checks, not normal operation.
+## Device profile
+
+The supported device has vendor ID **9354**, product ID **33382**, a Bluetooth transport, and the exact 100-byte report descriptor in `SideDecoder.swift`. Exactly one matching device must be present.
+
+`IOHIDDeviceConformsTo(mouse)` can return false before this device is opened, so it is logged for diagnostics rather than used as an additional matching condition.
+
+Metadata discovery does not open the HID manager. Only the selected Lofree is opened, using `kIOHIDOptionsTypeNone`. Callbacks are unscheduled/unregistered and the device is closed before the callback buffer is freed.
+
+## Report decoding
+
+Input report 3 is eight bytes, including its leading `03` report ID. Byte 1 contains the side masks `08` and `10`; motion and wheel bytes are ignored by the decoder.
+
+The descriptor allocates five button bits but declares Button usages 1 through 3. This may explain why side signals are available in raw reports without standard macOS side-button events. It is not a confirmed diagnosis of macOS internals.
+
+The decoder requires a neutral side-button report before accepting a new gesture. It ignores repeated held reports and cancels combined side-button or side-plus-ordinary-button gestures.
+
+## Build and test
+
+```sh
+sh build.sh
+sh test.sh
+```
+
+The build targets arm64/macOS 15.0 and uses AppKit, ApplicationServices, IOKit and ServiceManagement. It creates an ad-hoc signed app ZIP without installing or launching it. Temporary build/test paths are printed and may be deleted afterward.
+
+Tests cover profile matching, report decoding, settings/calibration persistence, gesture timing, cancellation and synthetic bridge event fields. Event-construction tests do not post events. Optional capture replay expects the original development capture's five `08` and eight `10` gestures; that capture is not distributed.
+
+The `--preview` argument opens Settings with input handling, permission requests, login registration and preference writes disabled, for layout checks.
 
 ## Validation
 
-The development environment was Apple Silicon / macOS Sequoia 15.8.1. Compilation, ad-hoc signature verification and deterministic tests passed. The original raw capture replay yielded five complete `08` gestures and eight complete `10` gestures; no private capture/log is bundled.
+Compilation, signature verification and deterministic tests passed on Apple Silicon with macOS Sequoia 15.8.1. Basic navigation, saved learning, double-click/hold actions and Mac Mouse Fix 3.1.0 bridge recognition have also been tested on the physical mouse.
 
-The user reported working basic navigation, double-click/hold actions, saved learning and Mac Mouse Fix 3.1.0 bridge recognition on the actual mouse. That does not establish compatibility with all firmware, Macs, OS versions, login/wake configurations, or MMF gestures.
+Wider OS/firmware compatibility, all login/wake combinations and complete Mac Mouse Fix gesture support have not been systematically validated.
 
-The source corresponding to 0.4.2 is unchanged in this publication package. The release executable is byte-identical to the installed working executable used during development. New documentation, license and packaging do not change the binary's signature.
+## Mac Mouse Fix bridge
 
-## Mac Mouse Fix bridge research
+The bridge emits public Quartz extra-button events. It sets pressure to distinguish down/up, as expected by Mac Mouse Fix's input receiver. It does not spoof a HID sender or create a virtual HID device.
 
-The upstream source inspected during development accepts synthetic events without a recognized HID sender when compiled with `NO_FILTER=1`. Its receiver checks button pressure to distinguish down/up; our event factory sets that explicitly. No sender identity is spoofed and no virtual HID driver is created.
+The upstream code inspected during development accepts events without a recognized device when compiled with `NO_FILTER=1`. This is implementation behavior, not an official integration contract:
 
-Reference commit and files:
-https://github.com/noah-nuebling/mac-mouse-fix/blob/ec3258d119ef652a98e097eb38d408ac379994e0/Helper/Core/Buttons/ButtonInputReceiver.m
-https://github.com/noah-nuebling/mac-mouse-fix/blob/ec3258d119ef652a98e097eb38d408ac379994e0/Mouse%20Fix.xcodeproj/project.pbxproj
+- [Button input receiver](https://github.com/noah-nuebling/mac-mouse-fix/blob/ec3258d119ef652a98e097eb38d408ac379994e0/Helper/Core/Buttons/ButtonInputReceiver.m)
+- [Build configuration](https://github.com/noah-nuebling/mac-mouse-fix/blob/ec3258d119ef652a98e097eb38d408ac379994e0/Mouse%20Fix.xcodeproj/project.pbxproj)
 
-No upstream source is redistributed. The bridge implementation is independently written against public Apple APIs.
+No Mac Mouse Fix source is included in this project.
 
-## Public distribution
+## Distribution
 
-The current app is ad-hoc signed, not notarized. A future Developer ID signed/notarized distribution would require the maintainer's Apple developer signing identity and notarization workflow. Do not publish keys, account credentials, local capture files or users' saved preference exports.
+The current release is ad-hoc signed and not notarized. Developer ID signing and notarization would require the maintainer's Apple developer identity and a separate distribution workflow.
